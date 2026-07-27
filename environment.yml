@@ -1,0 +1,20 @@
+name: h2o-lut
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11.*
+  - numpy=1.26.*      
+  - scipy=1.12.*
+  - pandas=2.2.*
+  - xarray=2024.1.*
+  - netcdf4=1.6.*     
+  - h5py=3.10.*
+  - pytables=3.9.*
+  - pyyaml=6.0.*
+  - dask=2024.1.*     
+  - distributed=2024.1.*
+  - tqdm=4.66.*
+  - pip
+  - pip:
+      - radis==0.17.* 
