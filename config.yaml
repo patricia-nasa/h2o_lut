@@ -1,0 +1,70 @@
+# H2O absorption-coefficient LUT configuration.
+#
+# The LUT stores k_abs [cm-1] for homogeneous atmospheric states:
+#   k_abs(channel, pressure, temperature, h2o_mole_fraction)
+#
+# Runtime layer optical depth is:
+#   alpha = k_abs * abs(diff(ze_m)) * 100
+
+output_file: h2o_absorption_lut.nc
+databank_name: HITRAN2024-H2O
+
+# Read channel centers from the same AMES BRDF files used by sbg_vlidort.py.
+# nwav is in microns in those files and is converted to nm.
+channel_source:
+  type: ames_brdf
+  glob: /discover/nobackup/projects/gmao/osse2/pub/c1440_NR/OBS/SBG/SSD650/LevelB/Y2006/M01/D16/ssd650-g5nr.lb2.ames_brdf.20060116_1735z.nc4
+  variable: nwav
+  input_units: micron
+
+# Alternatively:
+# channel_source:
+#   type: text
+#   path: channels_nm.txt
+#   input_units: nm
+
+# Natural terrestrial water isotopologues. 1-7 is conservative.
+isotopes: "1,2,3,4,5,6,7"
+
+# Reference monochromatic resolution around each channel center.
+# This is only needed to evaluate/interpolate the line spectrum accurately.
+# Run validate_resolution.py before accepting 0.001 cm-1.
+spectral:
+  half_window_cm1: 1.0
+  wstep_cm1: 0.001
+  reference_wstep_cm1: 0.0005
+  truncation_cm1: 25.0
+  broadening_method: voigt
+
+# Suggested initial atmospheric grid. Refine after interpolation validation.
+grid:
+  pressure_hpa:
+    values: [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 30, 50, 70, 100,
+             150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000, 1050]
+  temperature_k:
+    start: 170
+    stop: 330
+    step: 5
+  h2o_mole_fraction:
+    # Log grid from 0.1 ppmv to 8%.
+    logspace:
+      start_exponent: -7
+      stop_exponent: -1.096910013
+      number: 37
+
+continuum:
+  enabled: true
+  executable: /discover/nobackup/pcastell/MT_CKD_H2O/mt_ckd_h2o_4.3_linux_gnu_dbl
+  coefficient_file: /discover/nobackup/pcastell/MT_CKD_H2O/data/absco-ref_wv-mt-ckd.nc
+  # MT_CKD H2O is defined to 20,000 cm-1 (500 nm).
+  maximum_wavenumber_cm1: 20000.0
+
+# Set to false for deterministic serial debugging.
+parallel:
+  enabled: true
+  workers: 16
+
+compression:
+  zlib: true
+  complevel: 4
+
