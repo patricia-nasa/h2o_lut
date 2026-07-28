@@ -31,10 +31,9 @@ class RadisLineBackend:
             broadening_method=broadening_method,
             optimization=None,
             db_use_cached=True,
-            load_energies=False,
             verbose=False,
         )
-        self.sf.load_databank(databank_name, load_columns="equilibrium")
+        self.sf.load_databank(databank_name, load_columns="equilibrium",load_energies=False)
 
     def absorption_coefficient_cm1(self, pressure_hpa, temperature_k, x_h2o):
         # Use a 1 cm slab: absorbance = k [cm-1] * 1 cm.
