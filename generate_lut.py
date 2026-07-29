@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate a channel/p/T/H2O absorption-coefficient LUT."""
 
+import sys
 from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
@@ -73,7 +74,8 @@ def main():
         k_cont = np.zeros(shape, dtype=np.float64)
 
         total_states = int(np.prod(shape))
-        bar = tqdm(total=total_states, desc=f"{ich}: {channel_nm:.3f} nm")
+        bar = tqdm(total=total_states, desc=f"{ich}: {channel_nm:.3f} nm",
+                    disable=not sys.stdout.isatty())
         for ip, p in enumerate(pressure):
             for it, t in enumerate(temperature):
                 for ix, x in enumerate(xh2o):
