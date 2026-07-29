@@ -6,123 +6,56 @@ NetCDF attributes/names, and fails loudly instead of silently applying wrong uni
 """
 
 from __future__ import annotations
+import os, shutil, subprocess, tempfile
 from pathlib import Path
-import shutil
-import subprocess
-import tempfile
 import numpy as np
 import xarray as xr
 
-
-def _spectral_coord(ds):
-    for name in ds.coords:
-        low = name.lower()
-        units = str(ds[name].attrs.get("units", "")).lower()
-        if "wave" in low or "cm-1" in units or "cm^-1" in units:
-            return name
-    for name in ds.variables:
-        if ds[name].ndim == 1 and ("wave" in name.lower() or "wn" in name.lower()):
-            return name
-    raise RuntimeError(f"Could not identify MT_CKD spectral coordinate: {list(ds.variables)}")
-
-
-def _absorption_vars(ds, coord):
-    candidates = []
-    for name, da in ds.data_vars.items():
-        if coord not in da.dims:
-            continue
-        text = " ".join([
-            name,
-            str(da.attrs.get("long_name", "")),
-            str(da.attrs.get("standard_name", "")),
-        ]).lower()
-        units = str(da.attrs.get("units", "")).lower()
-        if "abs" in text or "continuum" in text or "cm-1" in units or "cm^-1" in units:
-            candidates.append(name)
-    if not candidates:
-        raise RuntimeError(
-            "Could not identify continuum absorption variables. "
-            f"Variables/attrs: {[(n, dict(ds[n].attrs)) for n in ds.data_vars]}"
-        )
-    return candidates
-
-
 class MTCKDBackend:
-    def __init__(self, executable, coefficient_file, maximum_wavenumber_cm1=20000.0):
+    def __init__(self, executable, coefficient_file,
+                 maximum_wavenumber_cm1=20000.0,
+                 debug_directory=None):
         self.executable = Path(executable).expanduser().resolve()
         self.coefficient_file = Path(coefficient_file).expanduser().resolve()
-        self.maximum_wavenumber_cm1 = float(maximum_wavenumber_cm1)
-        if not self.executable.exists():
-            raise FileNotFoundError(self.executable)
-        if not self.coefficient_file.exists():
-            raise FileNotFoundError(self.coefficient_file)
+        self.maximum_wavenumber_cm1 = maximum_wavenumber_cm1
+        self.debug_directory = Path(debug_directory).expanduser().resolve() if debug_directory else None
 
-    def absorption_coefficient_cm1(self, wavenumber_cm1, pressure_hpa, temperature_k, x_h2o):
-        wn = float(wavenumber_cm1)
-        if wn > self.maximum_wavenumber_cm1:
+    def _make_namelist(self, pressure_hpa, temperature_k, x_h2o, wv1, wv2, dwv):
+        return (
+            "&mt_ckd_input\n"
+            f" p_atm={pressure_hpa:.12g},\n"
+            f" t_atm={temperature_k:.12g},\n"
+            f" h2o_frac={x_h2o:.12g},\n"
+            f" wv1={wv1:.12g},\n"
+            f" wv2={wv2:.12g},\n"
+            f" dwv={dwv:.12g},\n"
+            "/\n"
+        )
+
+    def _env(self):
+        env=os.environ.copy()
+        if "CONDA_PREFIX" in env:
+            lib=str(Path(env["CONDA_PREFIX"])/"lib")
+            env["LD_LIBRARY_PATH"]=lib+":"+env.get("LD_LIBRARY_PATH","")
+        return env
+
+    def absorption_coefficient_cm1(self,wavenumber_cm1,pressure_hpa,temperature_k,x_h2o):
+        wn=float(wavenumber_cm1)
+        if wn>self.maximum_wavenumber_cm1:
             return 0.0
-
-        # Request a narrow interval around the channel. The continuum varies slowly.
-        wmin, wmax, dw = max(0.0, wn - 1.0), wn + 1.0, 0.1
-        config = f"""&mt_ckd_input
- p_atm={float(pressure_hpa):.12g}
- t_atm={float(temperature_k):.12g}
- h2o_frac={float(x_h2o):.12g}
- wv1={wmin:.12g}
- wv2={wmax:.12g}
- dwv={dw:.12g}
-/
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            shutil.copy2(self.coefficient_file, work / "absco-ref_wv-mt-ckd.nc")
-            cfg = work / "mt_ckd.config"
-            cfg.write_text(config)
-
-            # Most builds read mt_ckd.config from stdin; keeping the file in cwd
-            # also supports builds that open it by name.
-            proc = subprocess.run(
-                [str(self.executable)],
-                cwd=work,
-                input=config,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"MT_CKD failed ({proc.returncode})\n"
-                    f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
-                )
-            outputs = [p for p in work.glob("*.nc")
-                       if p.name != "absco-ref_wv-mt-ckd.nc"]
-            if not outputs:
-                raise RuntimeError("MT_CKD created no output NetCDF file.")
-
-            ds = xr.open_dataset(outputs[0]).load()
-            coord = _spectral_coord(ds)
-            vars_ = _absorption_vars(ds, coord)
-            x = np.asarray(ds[coord].values, dtype=np.float64)
-
-            total = np.zeros_like(x)
-            used = []
-            for name in vars_:
-                da = ds[name]
-                units = str(da.attrs.get("units", "")).strip().lower()
-                y = np.asarray(da.values, dtype=np.float64).squeeze()
-                if y.shape != x.shape:
-                    continue
-                # Only accept already state-scaled absorption coefficients.
-                if units in ("cm-1", "cm^-1", "1/cm", "cm**-1"):
-                    total += y
-                    used.append(name)
-            ds.close()
-
-            if not used:
-                raise RuntimeError(
-                    "MT_CKD output did not expose an absorption coefficient in cm-1. "
-                    "Inspect the output NetCDF and adapt mtckd_backend.py to its exact "
-                    "variable definitions before generating the LUT."
-                )
-            return float(np.interp(wn, x, total))
-
+        work=Path(tempfile.mkdtemp(prefix="mtckd_"))
+        print(f"Temp directory: {work}")
+        shutil.copy2(self.coefficient_file, work/"absco-ref_wv-mt-ckd.nc")
+        cfg=work/"mt_ckd.config"
+        cfg.write_text(self._make_namelist(pressure_hpa,temperature_k,x_h2o,max(0,wn-1),wn+1,0.1))
+        with cfg.open() as fin:
+            proc=subprocess.run([str(self.executable)],cwd=work,stdin=fin,
+                                text=True,capture_output=True,env=self._env())
+        if proc.returncode!=0:
+            raise RuntimeError(f"MT_CKD failed ({proc.returncode})\nSTDERR:\n{proc.stderr}")
+        ds=xr.open_dataset(work/"mt_ckd_h2o_output.nc")
+        return float(np.interp(
+            wn,
+            ds["wavenumbers"].values,
+            ds["self_absorption"].values+ds["frgn_absorption"].values
+        ))
